@@ -12,7 +12,6 @@ import android.os.Bundle
 import android.os.Environment
 import android.os.Handler
 import android.os.Looper
-import android.provider.Settings
 import android.view.Gravity
 import android.widget.Button
 import android.widget.EditText
@@ -174,7 +173,7 @@ class MainActivity : Activity() {
         try {
             if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
                 startActivity(
-                    Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+                    Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
                 )
             } else if (Build.VERSION.SDK_INT < 30) {
                 requestPermissions(
