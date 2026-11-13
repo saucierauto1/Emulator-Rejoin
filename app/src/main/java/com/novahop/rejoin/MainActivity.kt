@@ -248,6 +248,13 @@ class MainActivity : Activity() {
         }
     }
 
+    // the name the user sees on the app's window, e.g. "Lunex Delta 04"
+    private fun appLabel(pkg: String): String = try {
+        packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
+    } catch (e: Exception) {
+        pkg
+    }
+
     private fun statusColor(s: String): Int = when {
         s == "OK" -> green
         s.startsWith("loading") || s == "restarting" || s.startsWith("not matched") -> yellow
@@ -298,7 +305,8 @@ class MainActivity : Activity() {
         }
         for (a in accounts) {
             val r = rows[a.uid] ?: continue
-            r.sub.text = (a.pkg ?: "tap to pick its app") + "  ·  restarts: " + a.restarts
+            r.sub.text = (if (a.pkg == null) "tap to pick its app" else appLabel(a.pkg) + "  ·  " + a.pkg) +
+                "  ·  restarts: " + a.restarts
             r.status.text = a.status
             r.status.setTextColor(statusColor(a.status))
         }
@@ -350,12 +358,13 @@ class MainActivity : Activity() {
         val all = Mapping.all()
         val labels = apps.map { p ->
             val owner = all.entries.firstOrNull { it.value == p && it.key != uid }?.key
-            if (owner != null) "$p  (used by ${WatcherState.accounts.firstOrNull { it.uid == owner }?.name ?: owner})" else p
+            val name2 = appLabel(p) + "  ·  " + p
+            if (owner != null) "$name2  (used by ${WatcherState.accounts.firstOrNull { it.uid == owner }?.name ?: owner})" else name2
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("Which Roblox app is $name?")
             .setSingleChoiceItems(labels, apps.indexOf(current)) { d, i ->
-                Mapping.set(uid, apps[i])
+                Mapping.pick(uid, apps[i])
                 WatcherState.log("Saved: $name is ${apps[i]}")
                 d.dismiss()
             }

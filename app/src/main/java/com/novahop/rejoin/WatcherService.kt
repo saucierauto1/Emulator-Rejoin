@@ -22,6 +22,8 @@ class WatcherService : Service() {
         const val BOOT_WAIT = 150        // after a restart, give the app this long to load
         const val GIVEUP = 3600          // unmatched account's heartbeat older than this = not in use
         const val CHECK = 5
+        const val FRESH = 20             // heartbeat newer than this = the account is in the game right now
+        const val RETRY = 900            // after 3 restarts that didn't bring it back, only try again this often
 
         val HEARTBEAT_LINE =
             "loadstring(game:HttpGet(\"https://gist.githubusercontent.com/saucierauto1/4e760d58e39c190bb537f599d9d788a8/raw/NovaHop_Heartbeat.lua\"))()"
@@ -84,6 +86,8 @@ class WatcherService : Service() {
     private val names = HashMap<String, String>()
     private val warned = HashSet<String>()
     private val restarts = HashMap<String, Int>()
+    private val fails = HashMap<String, Int>()
+    private val probed = HashMap<String, Long>()
     @Volatile private var front: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -174,17 +178,29 @@ class WatcherService : Service() {
     private fun running(p: String) = Shell.run("pidof $p").trim().isNotEmpty()
     private fun freeRunning() = apps.filter { !Mapping.taken(it) && running(it) }
 
-    private fun match(uid: String): Boolean {
-        val fr = freeRunning()
-        if (fr.size == 1) {   // only one unmatched Roblox app is open -> this account must be in that one
-            Mapping.set(uid, fr[0])
-            say("${names[uid]} ($uid) is ${fr[0]} (only unmatched app open)")
+    // Where Roblox itself says this account is logged in: the one app whose own data mentions the UserId (needs root)
+    private fun probe(uid: String): String? {
+        if (!Shell.root || apps.size < 2) return null
+        val cmd = apps.joinToString("; ") {
+            "grep -rqw '$uid' /data/data/$it/shared_prefs /data/data/$it/files/appData/LocalStorage && echo $it"
+        }
+        val hits = Shell.run(cmd).lines().map { it.trim() }.filter { apps.contains(it) }
+        return if (hits.size == 1) hits[0] else null
+    }
+
+    private fun match(uid: String, fresh: Boolean, freshUnmatched: Int): Boolean {
+        if (apps.size == 1) {
+            if (Mapping.taken(apps[0]) && !fresh) return false
+            Mapping.set(uid, apps[0])
+            say("${names[uid]} ($uid) is ${apps[0]} (only Roblox app)")
             return true
         }
-        val free = if (fr.isEmpty()) apps.filter { !Mapping.taken(it) } else fr
-        if (free.size == 1) {
-            Mapping.set(uid, free[0])
-            say("${names[uid]} ($uid) is ${free[0]} (only app left)")
+        // only safe when exactly one account is writing heartbeats right now and exactly one unmatched app is open
+        if (!fresh || freshUnmatched != 1) return false
+        val fr = freeRunning()
+        if (fr.size == 1) {
+            Mapping.set(uid, fr[0])
+            say("${names[uid]} ($uid) is ${fr[0]} (only unmatched app open)")
             return true
         }
         return false
@@ -319,6 +335,9 @@ class WatcherService : Service() {
             val best = collect()
             val list = ArrayList<Account>()
             val pending = HashMap<String, List<String>>()
+            val freshUnmatched = best.count { (u, ln) ->
+                Mapping.get(u) == null && now - (ln.substringBefore('|').toLongOrNull() ?: 0L) < FRESH
+            }
             for ((uid, line) in best) {
                 val parts = line.split("|")
                 val ts = parts[0].toLongOrNull() ?: continue
@@ -326,9 +345,22 @@ class WatcherService : Service() {
                 val msg = parts.getOrElse(2) { "" }
                 names[uid] = parts.getOrElse(3) { "" }.trim().ifEmpty { uid }
                 val age = now - ts
+                if (Mapping.get(uid) == null && age >= GIVEUP) continue   // an old file from an account you don't use any more
+                val lp = probed[uid]
+                if (!Mapping.isManual(uid) && (lp == null || (Mapping.get(uid) == null && now - lp >= 60))) {
+                    probed[uid] = now
+                    val p = probe(uid)
+                    val was = Mapping.get(uid)
+                    if (p != null && p != was) {
+                        Mapping.set(uid, p)
+                        say(
+                            if (was == null) "${names[uid]} ($uid) is $p (found in the app's data)"
+                            else "${names[uid]}: match fixed, $was -> $p (found in the app's data)"
+                        )
+                    }
+                }
                 if (Mapping.get(uid) == null) {
-                    if (age >= GIVEUP) continue   // an old file from an account you don't use any more
-                    if (!match(uid)) {
+                    if (!match(uid, age < FRESH, freshUnmatched)) {
                         pending[uid] = apps.filter { !Mapping.taken(it) }
                         if (warned.add(uid)) say("Don't know which app ${names[uid]} is yet, pick it in the app")
                         list.add(Account(uid, names[uid]!!, null, "not matched", 0))
@@ -339,6 +371,7 @@ class WatcherService : Service() {
                 val st = when {
                     l != null && now - l < BOOT_WAIT -> "loading (${now - l}s)"
                     state == "error" && age < STALE -> "error: $msg"
+                    age >= STALE && (fails[uid] ?: 0) >= 3 -> "not coming back, check its app"
                     age >= STALE -> "restarting"
                     else -> "OK"
                 }
@@ -351,8 +384,14 @@ class WatcherService : Service() {
                     if ((errSince[uid] ?: 0L) != 0L) say("${names[uid]}: error cleared")
                     errSince[uid] = 0
                     if (age >= STALE) {
+                        val f = fails[uid] ?: 0
+                        if (f >= 3 && l != null && now - l < RETRY) continue   // probably the wrong app: stop closing it over and over
+                        if (f == 2) say("${names[uid]} didn't come back after 3 restarts. If ${Mapping.get(uid)} is the wrong app, tap the account and pick the right one. Trying again every 15 min.")
+                        fails[uid] = f + 1
                         if (l != null) say("${names[uid]} still not back in game; screen in front: ${topAct()}")
                         restart(uid, "no heartbeat for ${age}s (crashed, frozen or not in game)")
+                    } else {
+                        fails[uid] = 0
                     }
                 }
             }

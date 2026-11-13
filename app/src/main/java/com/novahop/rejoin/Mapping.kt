@@ -6,9 +6,11 @@ import android.content.SharedPreferences
 // Which Roblox app each account (UserId) runs in. Replaces ~/.novahop_map.
 object Mapping {
     private var prefs: SharedPreferences? = null
+    private var manual: SharedPreferences? = null   // matches the user picked by hand; never changed automatically
 
     fun init(ctx: Context) {
         if (prefs == null) prefs = ctx.applicationContext.getSharedPreferences("novahop_map", Context.MODE_PRIVATE)
+        if (manual == null) manual = ctx.applicationContext.getSharedPreferences("novahop_manual", Context.MODE_PRIVATE)
     }
 
     @Synchronized
@@ -27,9 +29,17 @@ object Mapping {
         e.putString(uid, pkg).apply()
     }
 
+    fun pick(uid: String, pkg: String) {
+        set(uid, pkg)
+        manual?.edit()?.putBoolean(uid, true)?.apply()
+    }
+
+    fun isManual(uid: String) = manual?.getBoolean(uid, false) ?: false
+
     @Synchronized
     fun clear() {
         prefs?.edit()?.clear()?.apply()
+        manual?.edit()?.clear()?.apply()
     }
 
     // People coming from the Termux watcher keep their matches
