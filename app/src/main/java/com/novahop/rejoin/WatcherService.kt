@@ -83,6 +83,7 @@ class WatcherService : Service() {
     private val errSince = HashMap<String, Long>()
     private val names = HashMap<String, String>()
     private val warned = HashSet<String>()
+    private val restarts = HashMap<String, Int>()
     @Volatile private var front: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -145,7 +146,8 @@ class WatcherService : Service() {
                 "find /storage/emulated/0 -maxdepth 7 -type d -path '*NovaHop/hb'"
         )
         if (Shell.root) cmd.append("; find /data/media/0 /data/data /data/user/0 -maxdepth 8 -type d -path '*NovaHop/hb'")
-        hbDirs = Shell.run(cmd.toString()).lines().map { it.trim() }.filter { it.startsWith("/") }.distinct()
+        hbDirs = Shell.run(cmd.toString()).lines().map { it.trim() }.filter { it.startsWith("/") }
+            .distinctBy { it.replace("/sdcard/", "/storage/emulated/0/").replace("/data/media/0/", "/storage/emulated/0/").lowercase() }
         return hbDirs.isNotEmpty()
     }
 
@@ -261,6 +263,7 @@ class WatcherService : Service() {
         Thread { try { clearAds(p) } catch (e: InterruptedException) { } }.start()
         last[uid] = now()
         errSince[uid] = 0
+        restarts[uid] = (restarts[uid] ?: 0) + 1
     }
 
     // ------------------------------------------------------------ ad guard
@@ -279,7 +282,7 @@ class WatcherService : Service() {
                 say("Ad over Roblox ($a), switching back to $p")
                 Shell.run("monkey -p $p -c android.intent.category.LAUNCHER 1")
                 Thread.sleep(3000)
-            } else if (f != seen && !LEAVE_ALONE.containsMatchIn(f)) {
+            } else if (f != seen && !LEAVE_ALONE.containsMatchIn(a)) {
                 say("In front now: $a (left alone; if this is the ad, report this line)")
             }
             seen = f
@@ -328,12 +331,18 @@ class WatcherService : Service() {
                     if (!match(uid)) {
                         pending[uid] = apps.filter { !Mapping.taken(it) }
                         if (warned.add(uid)) say("Don't know which app ${names[uid]} is yet, pick it in the app")
-                        list.add(Account(uid, names[uid]!!, null, state, msg, age))
+                        list.add(Account(uid, names[uid]!!, null, "not matched", 0))
                         continue
                     }
                 }
-                list.add(Account(uid, names[uid]!!, Mapping.get(uid), state, msg, age))
                 val l = last[uid]
+                val st = when {
+                    l != null && now - l < BOOT_WAIT -> "loading (${now - l}s)"
+                    state == "error" && age < STALE -> "error: $msg"
+                    age >= STALE -> "restarting"
+                    else -> "OK"
+                }
+                list.add(Account(uid, names[uid]!!, Mapping.get(uid), st, restarts[uid] ?: 0))
                 if (l != null && now - l < BOOT_WAIT) continue
                 if (state == "error" && age < STALE) {
                     if ((errSince[uid] ?: 0L) == 0L) { errSince[uid] = now; say("${names[uid]}: error on screen: $msg") }

@@ -5,7 +5,11 @@ import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
+import android.graphics.Color
 import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
+import android.graphics.drawable.RippleDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -13,23 +17,39 @@ import android.os.Environment
 import android.os.Handler
 import android.os.Looper
 import android.view.Gravity
-import android.widget.Button
+import android.view.View
+import android.view.ViewGroup
 import android.widget.EditText
-import android.widget.Toast
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 class MainActivity : Activity() {
 
+    private val bg = Color.parseColor("#0F0F14")
+    private val card = Color.parseColor("#1B1B25")
+    private val card2 = Color.parseColor("#2A2A38")
+    private val accent = Color.parseColor("#A855F7")
+    private val textMain = Color.parseColor("#F1F1F5")
+    private val textMuted = Color.parseColor("#9A9AAD")
+    private val green = Color.parseColor("#34D399")
+    private val yellow = Color.parseColor("#FBBF24")
+    private val red = Color.parseColor("#EF4444")
+
+    private class Row(val sub: TextView, val status: TextView)
+
     private val ui = Handler(Looper.getMainLooper())
-    private lateinit var status: TextView
-    private lateinit var startBtn: Button
+    private lateinit var dot: GradientDrawable
+    private lateinit var statusText: TextView
+    private lateinit var infoText: TextView
+    private lateinit var startBtn: TextView
+    private lateinit var setupText: TextView
     private lateinit var accountsBox: LinearLayout
     private lateinit var logView: TextView
-    private val rows = HashMap<String, Button>()
-    private var rowsKey = ""
-    @Volatile private var setupInfo = "Tap Setup once, then Start."
+    private val rows = HashMap<String, Row>()
+    private var rowsKey = "-"
+    @Volatile private var setupInfo = "First time here? Tap Setup, then Start."
 
     private val tick = object : Runnable {
         override fun run() {
@@ -38,76 +58,106 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
+
+    private fun rounded(color: Int): GradientDrawable =
+        GradientDrawable().apply {
+            setColor(color)
+            cornerRadius = dp(14).toFloat()
+        }
+
+    private fun pressable(color: Int): RippleDrawable =
+        RippleDrawable(ColorStateList.valueOf(0x40FFFFFF), rounded(color), null)
+
+    private fun block(top: Int): LinearLayout.LayoutParams =
+        LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT)
+            .apply { topMargin = dp(top) }
+
+    private fun label(s: String, size: Float, color: Int, bold: Boolean = false): TextView =
+        TextView(this).apply {
+            text = s
+            textSize = size
+            setTextColor(color)
+            if (bold) setTypeface(Typeface.DEFAULT, Typeface.BOLD)
+        }
+
+    private fun button(s: String, color: Int, height: Int, size: Float, onClick: () -> Unit): TextView =
+        label(s, size, textMain, true).apply {
+            gravity = Gravity.CENTER
+            background = pressable(color)
+            minHeight = dp(height)
+            setPadding(dp(8), dp(8), dp(8), dp(8))
+            isClickable = true
+            setOnClickListener { onClick() }
+        }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Mapping.init(this)
         Settings.init(this)
-        val pad = (16 * resources.displayMetrics.density).toInt()
+        window.statusBarColor = bg
+        window.navigationBarColor = bg
 
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
+            setPadding(dp(18), dp(18), dp(18), dp(24))
         }
 
-        status = TextView(this).apply { textSize = 15f }
-        root.addView(status)
+        root.addView(label("NovaHop Rejoin", 26f, textMain, true))
 
-        val buttons = LinearLayout(this).apply {
+        dot = GradientDrawable().apply {
+            shape = GradientDrawable.OVAL
+            setColor(textMuted)
+        }
+        val statusRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, pad / 2, 0, pad / 2)
+            gravity = Gravity.CENTER_VERTICAL
         }
-        buttons.addView(Button(this).apply {
-            text = "Setup"
-            setOnClickListener { setup() }
-        })
-        startBtn = Button(this).apply {
-            text = "Start"
-            setOnClickListener { toggle() }
-        }
-        buttons.addView(startBtn)
-        root.addView(buttons)
-        val buttons2 = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_HORIZONTAL
-            setPadding(0, 0, 0, pad / 2)
-        }
-        buttons2.addView(Button(this).apply {
-            text = "Game / private server"
-            setOnClickListener { gameDialog() }
-        })
-        buttons2.addView(Button(this).apply {
-            text = "Reset matches"
-            setOnClickListener {
-                AlertDialog.Builder(this@MainActivity)
-                    .setMessage("Forget which app every account is in?")
-                    .setPositiveButton("Reset") { _, _ -> Mapping.clear(); rowsKey = "" }
-                    .setNegativeButton("Cancel", null)
-                    .show()
-            }
-        })
-        root.addView(buttons2)
+        statusRow.addView(View(this).apply { background = dot }, LinearLayout.LayoutParams(dp(10), dp(10)))
+        statusText = label("Stopped", 15f, textMain, true).apply { setPadding(dp(8), 0, 0, 0) }
+        statusRow.addView(statusText)
+        root.addView(statusRow, block(6))
 
-        root.addView(TextView(this).apply {
-            text = "Accounts (tap one to change its app)"
-            setTypeface(null, Typeface.BOLD)
-        })
+        infoText = label("", 13f, textMuted)
+        root.addView(infoText, block(4))
+
+        startBtn = button("START", accent, 64, 18f) { toggle() }
+        root.addView(startBtn, block(18))
+
+        val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val names = listOf("Setup", "Game / server", "Reset matches")
+        val clicks = listOf<() -> Unit>({ setup() }, { gameDialog() }, { resetDialog() })
+        for (i in names.indices) {
+            val lp = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
+            if (i > 0) lp.leftMargin = dp(10)
+            actions.addView(button(names[i], card2, 52, 14f, clicks[i]), lp)
+        }
+        root.addView(actions, block(10))
+
+        setupText = label("", 13f, textMuted).apply {
+            background = rounded(card)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+        }
+        root.addView(setupText, block(14))
+
+        root.addView(label("ACCOUNTS", 12f, textMuted, true).apply { letterSpacing = 0.12f }, block(22))
         accountsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         root.addView(accountsBox)
 
-        root.addView(TextView(this).apply {
-            text = "Log"
-            setTypeface(null, Typeface.BOLD)
-            setPadding(0, pad / 2, 0, 0)
-        })
-        logView = TextView(this).apply {
+        root.addView(label("LOG", 12f, textMuted, true).apply { letterSpacing = 0.12f }, block(22))
+        logView = label("", 11f, textMuted).apply {
             typeface = Typeface.MONOSPACE
-            textSize = 11f
+            background = rounded(card)
+            setPadding(dp(14), dp(12), dp(14), dp(12))
             setTextIsSelectable(true)
         }
-        root.addView(logView)
+        root.addView(logView, block(8))
 
-        setContentView(ScrollView(this).apply { addView(root) })
+        setContentView(ScrollView(this).apply {
+            setBackgroundColor(bg)
+            isFillViewport = true
+            addView(root)
+        })
     }
 
     override fun onResume() {
@@ -132,6 +182,17 @@ class MainActivity : Activity() {
         ui.postDelayed({ refresh() }, 500)
     }
 
+    private fun resetDialog() {
+        AlertDialog.Builder(this)
+            .setMessage("Forget which app every account is in?")
+            .setPositiveButton("Reset") { _, _ ->
+                Mapping.clear()
+                rowsKey = "-"
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
     // One tap: root check, permissions, heartbeat into Delta's autoexec, old Termux matches.
     private fun setup() {
         setupInfo = "Setting up..."
@@ -151,7 +212,7 @@ class MainActivity : Activity() {
             if (done.isEmpty()) {
                 sb.append("Couldn't find Delta's autoexec folder. Open Delta once, then tap Setup again.\n")
             } else {
-                sb.append("Heartbeat added to:\n")
+                sb.append("Heartbeat is in:\n")
                 done.forEach { sb.append("  $it\n") }
                 sb.append("Now join the game once on every Roblox app.\n")
             }
@@ -161,7 +222,7 @@ class MainActivity : Activity() {
             WatcherState.apps = apps
             sb.append("Roblox apps: ${apps.joinToString(", ")}")
             setupInfo = sb.toString()
-            rowsKey = ""
+            rowsKey = "-"
             ui.post { refresh() }
         }.start()
     }
@@ -173,7 +234,10 @@ class MainActivity : Activity() {
         try {
             if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
                 startActivity(
-                    Intent(android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, Uri.parse("package:$packageName"))
+                    Intent(
+                        android.provider.Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
                 )
             } else if (Build.VERSION.SDK_INT < 30) {
                 requestPermissions(
@@ -184,22 +248,21 @@ class MainActivity : Activity() {
         }
     }
 
-    private fun describe(a: Account): String {
-        val st = when {
-            a.pkg == null -> "NOT MATCHED, tap to pick its app"
-            a.age >= WatcherService.STALE -> "no heartbeat for ${a.age}s"
-            a.state == "error" -> "error: ${a.msg}"
-            else -> "OK"
-        }
-        return "${a.name}\n${a.pkg ?: "?"}\n$st"
+    private fun statusColor(s: String): Int = when {
+        s == "OK" -> green
+        s.startsWith("loading") || s == "restarting" || s.startsWith("not matched") -> yellow
+        else -> red
     }
 
     private fun refresh() {
         val on = WatcherState.running
-        startBtn.text = if (on) "Stop" else "Start"
-        status.text = (if (on) "Watcher: RUNNING" else "Watcher: stopped") +
-            "\nGame: place ${Settings.place}, private server: ${if (Settings.ps.isEmpty()) "no" else "yes"}" +
-            "\n" + setupInfo
+        dot.setColor(if (on) green else textMuted)
+        statusText.text = if (on) "Running" else "Stopped"
+        startBtn.text = if (on) "STOP" else "START"
+        startBtn.background = pressable(if (on) red else accent)
+        val game = if (Settings.place == Settings.BEE_SWARM) "Bee Swarm Simulator" else "Place ${Settings.place}"
+        infoText.text = game + "  ·  " + (if (Settings.ps.isEmpty()) "public servers" else "private server")
+        setupText.text = setupInfo
 
         val accounts = WatcherState.accounts
         val key = accounts.joinToString(",") { it.uid }
@@ -208,27 +271,42 @@ class MainActivity : Activity() {
             rows.clear()
             accountsBox.removeAllViews()
             if (accounts.isEmpty()) {
-                accountsBox.addView(TextView(this).apply {
-                    text = "No accounts seen yet. Start the watcher and join the game."
-                })
+                accountsBox.addView(
+                    label("No accounts yet. Tap Start and join the game.", 13f, textMuted).apply {
+                        background = rounded(card)
+                        setPadding(dp(14), dp(12), dp(14), dp(12))
+                    },
+                    block(8)
+                )
             }
             for (a in accounts) {
-                val b = Button(this).apply {
-                    setAllCaps(false)
-                    gravity = Gravity.START or Gravity.CENTER_VERTICAL
+                val sub = label("", 12f, textMuted)
+                val st = label("", 14f, textMain, true)
+                val box = LinearLayout(this).apply {
+                    orientation = LinearLayout.VERTICAL
+                    background = pressable(card)
+                    setPadding(dp(14), dp(12), dp(14), dp(12))
+                    isClickable = true
                     setOnClickListener { pick(a.uid, a.name) }
+                    addView(label(a.name, 16f, textMain, true))
+                    addView(sub)
+                    addView(st)
                 }
-                rows[a.uid] = b
-                accountsBox.addView(b)
+                rows[a.uid] = Row(sub, st)
+                accountsBox.addView(box, block(8))
             }
         }
-        for (a in accounts) rows[a.uid]?.text = describe(a)
+        for (a in accounts) {
+            val r = rows[a.uid] ?: continue
+            r.sub.text = (a.pkg ?: "tap to pick its app") + "  ·  restarts: " + a.restarts
+            r.status.text = a.status
+            r.status.setTextColor(statusColor(a.status))
+        }
 
-        logView.text = WatcherState.logText()
+        logView.text = WatcherState.logText().ifEmpty { "Nothing yet." }
     }
 
     private fun gameDialog() {
-        val pad = (16 * resources.displayMetrics.density).toInt()
         val game = EditText(this).apply {
             hint = "Game link or place ID"
             setSingleLine()
@@ -241,7 +319,7 @@ class MainActivity : Activity() {
         }
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad / 2, pad, 0)
+            setPadding(dp(18), dp(8), dp(18), 0)
             addView(TextView(this@MainActivity).apply { text = "Game (empty = Bee Swarm Simulator)" })
             addView(game)
             addView(TextView(this@MainActivity).apply { text = "Private server link (empty = public servers)" })

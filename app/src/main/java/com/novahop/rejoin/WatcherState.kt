@@ -8,9 +8,8 @@ data class Account(
     val uid: String,
     val name: String,
     val pkg: String?,
-    val state: String,
-    val msg: String,
-    val age: Long,
+    val status: String,
+    val restarts: Int,
 )
 
 object WatcherState {
