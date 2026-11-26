@@ -369,9 +369,16 @@ class MainActivity : Activity() {
         val hopWait = field("90", Settings.hopWait.toString(), true)
         val shots = CheckBox(this).apply { text = "Add a screenshot to the status"; isChecked = Settings.shots }
         val events = CheckBox(this).apply { text = "Message on every restart / stuck account"; isChecked = Settings.events }
+        val autoBoot = CheckBox(this).apply { text = "Start watching when the emulator starts"; isChecked = Settings.autoBoot }
+        val openAll = CheckBox(this).apply { text = "START opens every clone (one at a time)"; isChecked = Settings.openAll }
+        val cache = field("0", Settings.cacheHours.toString(), true)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(8), dp(18), 0)
+            addView(autoBoot)
+            addView(openAll)
+            addView(TextView(this@MainActivity).apply { text = "Clear Roblox cache every (hours, 0 = off)" })
+            addView(cache)
             addView(TextView(this@MainActivity).apply { text = "Seconds between launching clones" })
             addView(gap)
             addView(TextView(this@MainActivity).apply { text = "Restart after an error screen stays up (seconds)" })
@@ -397,6 +404,7 @@ class MainActivity : Activity() {
                 maxOf(0, gap.text.toString().toIntOrNull() ?: 15), url, ping.text.toString().trim(),
                 maxOf(30, every.text.toString().toIntOrNull() ?: 60), shots.isChecked, events.isChecked
             )
+            Settings.saveMore(autoBoot.isChecked, openAll.isChecked, maxOf(0, cache.text.toString().toIntOrNull() ?: 0))
             Settings.saveWaits(
                 maxOf(5, errWait.text.toString().toIntOrNull() ?: 20),
                 maxOf(10, hopWait.text.toString().toIntOrNull() ?: 90)

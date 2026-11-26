@@ -26,6 +26,15 @@ object Settings {
     val errorWait: Int get() = prefs?.getInt("errWait", 20) ?: 20     // normal error screens (279, kicks)
     val hopWait: Int get() = prefs?.getInt("hopWait", 90) ?: 90       // teleport / full server: NovaHop retries itself
 
+    val autoBoot: Boolean get() = prefs?.getBoolean("autoBoot", false) ?: false   // start when the emulator starts
+    val openAll: Boolean get() = prefs?.getBoolean("openAll", true) ?: true       // START opens every clone
+    val cacheHours: Int get() = prefs?.getInt("cacheHours", 0) ?: 0                // clear Roblox cache every N hours, 0 = off
+
+    fun saveMore(autoBoot: Boolean, openAll: Boolean, cacheHours: Int) {
+        prefs?.edit()?.putBoolean("autoBoot", autoBoot)?.putBoolean("openAll", openAll)
+            ?.putInt("cacheHours", cacheHours)?.apply()
+    }
+
     fun saveWaits(errorWait: Int, hopWait: Int) {
         prefs?.edit()?.putInt("errWait", errorWait)?.putInt("hopWait", hopWait)?.apply()
     }

@@ -185,6 +185,35 @@ class WatcherService : Service() {
 
     // ------------------------------------------------------------ which app is which account
     private fun running(p: String) = Shell.run("pidof $p").trim().isNotEmpty()
+
+    // START: open every clone that isn't open yet, Settings.launchGap seconds apart
+    private fun openAll() {
+        val map = Mapping.all()                       // uid -> app
+        val targets = if (map.isNotEmpty()) map.values.distinct().filter { apps.contains(it) } else apps
+        val toOpen = targets.filter { !running(it) }
+        if (toOpen.isEmpty()) return
+        say("Opening ${toOpen.size} Roblox app(s), ${Settings.launchGap}s apart")
+        for ((i, p) in toOpen.withIndex()) {
+            if (!alive) return
+            openLink(p)
+            Thread { try { clearAds(p) } catch (e: InterruptedException) { } }.start()
+            for ((u, pk) in map) if (pk == p) last[u] = now()
+            if (i < toOpen.size - 1) Thread.sleep(Settings.launchGap * 1000L)
+        }
+    }
+
+    // free space: Roblox's cache folders in every clone (the game keeps running)
+    private fun clearCache() {
+        if (!Shell.root) { say("Clearing the cache needs root"); return }
+        var freed = 0L
+        for (p in apps) {
+            val before = Shell.run("du -sk /data/data/$p/cache /data/data/$p/code_cache").lines()
+                .sumOf { it.trim().substringBefore('\t').substringBefore(' ').toLongOrNull() ?: 0L }
+            Shell.run("rm -rf /data/data/$p/cache/* /data/data/$p/code_cache/*")
+            freed += before
+        }
+        say("Cleared Roblox cache in ${apps.size} app(s), about ${freed / 1024} MB")
+    }
     private fun freeRunning() = apps.filter { !Mapping.taken(it) && running(it) }
 
     // Where Roblox itself says this account is logged in: the one app whose own data mentions the UserId (needs root)
@@ -330,17 +359,24 @@ class WatcherService : Service() {
         for (p in apps) say("  $p opens links with: ${comp(p).ifEmpty { "NOT FOUND" }}")
         if (!Shell.root) say("No root: a frozen Roblox can't be force-closed, only sent the join link. Turn on root for best results.")
         reporter = Thread { try { reportLoop() } catch (e: InterruptedException) { } }.also { it.start() }
+        if (Settings.openAll) openAll()
         while (alive && !findHb()) {
             say("Waiting for NovaHop/hb (tap Setup, then join the game on every Roblox app)...")
             Thread.sleep(15000)
         }
         for (d in hbDirs) say("Watching $d")
         var lastScan = now()
+        var lastClean = now()
         guard = Thread { try { guardLoop() } catch (e: InterruptedException) { } }.also { it.start() }
 
         while (alive) {
             Thread.sleep(CHECK * 1000L)
             val now = now()
+            val hours = Settings.cacheHours
+            if (hours > 0 && now - lastClean >= hours * 3600L) {
+                lastClean = now
+                clearCache()
+            }
             if (now - lastScan >= 60) {   // a new clone started writing heartbeats? pick up its folder
                 lastScan = now
                 val n = hbDirs.size
