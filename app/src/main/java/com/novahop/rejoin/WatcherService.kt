@@ -88,6 +88,10 @@ class WatcherService : Service() {
     private val restarts = HashMap<String, Int>()
     private val fails = HashMap<String, Int>()
     private val probed = HashMap<String, Long>()
+    private val queue = ArrayList<Pair<String, String>>()   // (uid, why) waiting for their launch slot
+    private var nextLaunch = 0L
+    private var reporter: Thread? = null
+    private var lastHookError = ""
     @Volatile private var front: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -110,6 +114,7 @@ class WatcherService : Service() {
         alive = false
         main?.interrupt()
         guard?.interrupt()
+        reporter?.interrupt()
         try { wake?.release() } catch (e: Exception) { }
         getSharedPreferences("state", MODE_PRIVATE).edit().putBoolean("on", false).apply()
         WatcherState.running = false
@@ -271,9 +276,15 @@ class WatcherService : Service() {
         }
     }
 
+    // restarts wait in line so clones are launched one at a time, Settings.launchGap seconds apart
     private fun restart(uid: String, why: String) {
+        if (queue.none { it.first == uid }) queue.add(uid to why)
+    }
+
+    private fun doRestart(uid: String, why: String) {
         val p = Mapping.get(uid) ?: return
         say("Restarting $p (${names[uid]}): $why")
+        event("\uD83D\uDD04 Restarting **${names[uid]}**: $why")
         if (Shell.root) { Shell.run("am force-stop $p"); Thread.sleep(3000) }
         openLink(p)
         Thread { try { clearAds(p) } catch (e: InterruptedException) { } }.start()
@@ -321,6 +332,7 @@ class WatcherService : Service() {
         for (d in hbDirs) say("Watching $d")
         var lastScan = now()
         guard = Thread { try { guardLoop() } catch (e: InterruptedException) { } }.also { it.start() }
+        reporter = Thread { try { reportLoop() } catch (e: InterruptedException) { } }.also { it.start() }
 
         while (alive) {
             Thread.sleep(CHECK * 1000L)
@@ -367,6 +379,11 @@ class WatcherService : Service() {
                         continue
                     }
                 }
+                val qi = queue.indexOfFirst { it.first == uid }
+                if (qi >= 0) {
+                    list.add(Account(uid, names[uid]!!, Mapping.get(uid), "waiting to launch (#${qi + 1})", restarts[uid] ?: 0))
+                    continue
+                }
                 val l = last[uid]
                 val st = when {
                     l != null && now - l < BOOT_WAIT -> "loading (${now - l}s)"
@@ -386,6 +403,7 @@ class WatcherService : Service() {
                     if (age >= STALE) {
                         val f = fails[uid] ?: 0
                         if (f >= 3 && l != null && now - l < RETRY) continue   // probably the wrong app: stop closing it over and over
+                        if (f == 2) event("\u26A0\uFE0F **${names[uid]}** didn't come back after 3 restarts", true)
                         if (f == 2) say("${names[uid]} didn't come back after 3 restarts. If ${Mapping.get(uid)} is the wrong app, tap the account and pick the right one. Trying again every 15 min.")
                         fails[uid] = f + 1
                         if (l != null) say("${names[uid]} still not back in game; screen in front: ${topAct()}")
@@ -397,6 +415,123 @@ class WatcherService : Service() {
             }
             WatcherState.accounts = list.sortedBy { it.name.lowercase() }
             WatcherState.pending = pending
+            if (queue.isNotEmpty() && now() >= nextLaunch) {
+                val (u, why) = queue.removeAt(0)
+                doRestart(u, why)
+                nextLaunch = now() + Settings.launchGap
+            }
         }
+    }
+
+    // ------------------------------------------------------------ Discord
+    private fun event(text: String, important: Boolean = false) {
+        val url = Settings.webhook
+        if (!Discord.isWebhook(url) || !Settings.events) return
+        val ping = Settings.ping.trim()
+        val msg = if (important && ping.isNotEmpty()) "<@$ping> $text" else text
+        Thread {
+            try { Discord.send(url, msg) } catch (e: Exception) { hookError(e) }
+        }.start()
+    }
+
+    private fun hookError(e: Exception) {
+        val m = e.message ?: e.toString()
+        if (m != lastHookError) { lastHookError = m; say("Discord webhook failed: $m") }
+    }
+
+    private fun reportLoop() {
+        Thread.sleep(20000)
+        while (alive) {
+            val url = Settings.webhook
+            if (Discord.isWebhook(url)) {
+                try {
+                    Discord.status(url, statusEmbed(), if (Settings.shots && Shell.root) screenshot() else null)
+                    lastHookError = ""
+                } catch (e: Exception) { hookError(e) }
+            }
+            Thread.sleep(maxOf(30, Settings.statusEvery) * 1000L)
+        }
+    }
+
+    private fun statusEmbed(): org.json.JSONObject {
+        val accounts = WatcherState.accounts
+        val ram = ramByApp()
+        val game = if (Settings.place == Settings.BEE_SWARM) "Bee Swarm Simulator" else "Place ${Settings.place}"
+        val sb = StringBuilder()
+        for (a in accounts) {
+            val (dot, word) = when {
+                a.status == "OK" -> "\uD83D\uDFE2" to "Online"
+                a.status.startsWith("loading") || a.status.startsWith("waiting") || a.status == "restarting" ->
+                    "\uD83D\uDFE1" to a.status.replaceFirstChar { it.uppercase() }
+                a.status == "not matched" -> "\u26AB" to "Not matched"
+                else -> "\uD83D\uDD34" to a.status.replaceFirstChar { it.uppercase() }
+            }
+            val mb = a.pkg?.let { ram[it] }
+            sb.append("$dot **${a.name}** \u2014 $word\n")
+            sb.append("Game: $game \u00B7 Rejoins: ${a.restarts} \u00B7 RAM: ${mb?.let { "$it MB" } ?: "\u2013"}\n\n")
+        }
+        if (accounts.isEmpty()) sb.append("No accounts seen yet.")
+        val online = accounts.count { it.status == "OK" }
+        val (cpu, used, total) = systemStats()
+        val embed = org.json.JSONObject()
+            .put("title", "NovaHop Rejoin \u00B7 $online/${accounts.size} online")
+            .put("description", sb.toString().take(3900))
+            .put("color", 0x7C3AED)
+            .put("timestamp", Discord.nowIso())
+            .put("footer", org.json.JSONObject().put("text", "Updates every ${maxOf(30, Settings.statusEvery)}s"))
+        val sys = if (total > 0) "CPU ${cpu}% \u00B7 RAM ${"%.1f".format(used / 1024.0)} / ${"%.1f".format(total / 1024.0)} GB" else "unavailable"
+        embed.put("fields", org.json.JSONArray().put(org.json.JSONObject().put("name", "Device").put("value", sys).put("inline", false)))
+        if (Settings.shots && Shell.root) embed.put("image", org.json.JSONObject().put("url", "attachment://screen.jpg"))
+        return embed
+    }
+
+    // RAM per Roblox app in MB, from each app's main process
+    private fun ramByApp(): Map<String, Long> {
+        val cmd = apps.joinToString("; ") {
+            "p=\$(pidof -s $it); [ -n \"\$p\" ] && echo \"$it \$(grep VmRSS /proc/\$p/status)\""
+        }
+        val out = HashMap<String, Long>()
+        for (l in Shell.run(cmd).lines()) {
+            val m = Regex("^(\\S+) VmRSS:\\s+(\\d+)").find(l.trim()) ?: continue
+            out[m.groupValues[1]] = m.groupValues[2].toLong() / 1024
+        }
+        return out
+    }
+
+    // (cpu %, used MB, total MB)
+    private fun systemStats(): Triple<Int, Long, Long> {
+        var cpu = 0
+        val st = Shell.run("head -1 /proc/stat; sleep 1; head -1 /proc/stat").lines().filter { it.startsWith("cpu ") }
+        if (st.size == 2) {
+            val a = st[0].trim().split(Regex("\\s+")).drop(1).mapNotNull { it.toLongOrNull() }
+            val b = st[1].trim().split(Regex("\\s+")).drop(1).mapNotNull { it.toLongOrNull() }
+            if (a.size >= 4 && b.size >= 4) {
+                val idle = (b[3] - a[3]) + (b.getOrElse(4) { 0L } - a.getOrElse(4) { 0L })
+                val all = b.sum() - a.sum()
+                if (all > 0) cpu = (100 * (all - idle) / all).toInt()
+            }
+        }
+        var total = 0L
+        var avail = 0L
+        for (l in Shell.run("grep -E 'MemTotal|MemAvailable' /proc/meminfo").lines()) {
+            val n = Regex("(\\d+)").find(l)?.value?.toLongOrNull() ?: continue
+            if (l.startsWith("MemTotal")) total = n / 1024
+            if (l.startsWith("MemAvailable")) avail = n / 1024
+        }
+        return Triple(cpu, total - avail, total)
+    }
+
+    // screen as a small JPEG
+    private fun screenshot(): ByteArray? {
+        val f = java.io.File(cacheDir, "screen.png")
+        Shell.run("screencap -p '${f.absolutePath}' && chmod 666 '${f.absolutePath}'")
+        if (!f.exists()) return null
+        val bmp = android.graphics.BitmapFactory.decodeFile(f.absolutePath) ?: return null
+        val w = minOf(1280, bmp.width)
+        val small = android.graphics.Bitmap.createScaledBitmap(bmp, w, bmp.height * w / bmp.width, true)
+        val out = java.io.ByteArrayOutputStream()
+        small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+        f.delete()
+        return out.toByteArray()
     }
 }

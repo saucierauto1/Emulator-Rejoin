@@ -19,6 +19,8 @@ import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.text.InputType
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
@@ -133,6 +135,7 @@ class MainActivity : Activity() {
             actions.addView(button(names[i], card2, 52, 14f, clicks[i]), lp)
         }
         root.addView(actions, block(10))
+        root.addView(button("Discord & settings", card2, 52, 14f) { settingsDialog() }, block(10))
 
         setupText = label("", 13f, textMuted).apply {
             background = rounded(card)
@@ -345,6 +348,64 @@ class MainActivity : Activity() {
                     Settings.save(p, s, ps.text.toString().trim())
                     WatcherState.log("Saved: place $p, private server: ${if (s.isEmpty()) "no" else "yes"}")
                     refresh()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun settingsDialog() {
+        fun field(hint: String, value: String, number: Boolean = false) = EditText(this).apply {
+            this.hint = hint
+            setSingleLine()
+            if (number) inputType = InputType.TYPE_CLASS_NUMBER
+            setText(value)
+        }
+        val hook = field("https://discord.com/api/webhooks/...", Settings.webhook)
+        val ping = field("Discord user ID (optional)", Settings.ping, true)
+        val every = field("60", Settings.statusEvery.toString(), true)
+        val gap = field("15", Settings.launchGap.toString(), true)
+        val shots = CheckBox(this).apply { text = "Add a screenshot to the status"; isChecked = Settings.shots }
+        val events = CheckBox(this).apply { text = "Message on every restart / stuck account"; isChecked = Settings.events }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), 0)
+            addView(TextView(this@MainActivity).apply { text = "Seconds between launching clones" })
+            addView(gap)
+            addView(TextView(this@MainActivity).apply { text = "Discord webhook (empty = off)" })
+            addView(hook)
+            addView(TextView(this@MainActivity).apply { text = "Update the status every (seconds, min 30)" })
+            addView(every)
+            addView(shots)
+            addView(events)
+            addView(TextView(this@MainActivity).apply { text = "Ping this user when an account is stuck" })
+            addView(ping)
+        }
+        fun save(): Boolean {
+            val url = hook.text.toString().trim()
+            if (url.isNotEmpty() && !Discord.isWebhook(url)) {
+                Toast.makeText(this, "That isn't a Discord webhook link, nothing changed", Toast.LENGTH_LONG).show()
+                return false
+            }
+            Settings.saveExtra(
+                maxOf(0, gap.text.toString().toIntOrNull() ?: 15), url, ping.text.toString().trim(),
+                maxOf(30, every.text.toString().toIntOrNull() ?: 60), shots.isChecked, events.isChecked
+            )
+            WatcherState.log("Settings saved")
+            return true
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Discord & settings")
+            .setView(ScrollView(this).apply { addView(box) })
+            .setPositiveButton("Save") { _, _ -> save() }
+            .setNeutralButton("Save & test") { _, _ ->
+                if (save() && Settings.webhook.isNotEmpty()) {
+                    Thread {
+                        val msg = try {
+                            Discord.send(Settings.webhook, "NovaHop Rejoin test message"); "Sent, check Discord"
+                        } catch (e: Exception) { "Failed: ${e.message}" }
+                        runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
+                    }.start()
                 }
             }
             .setNegativeButton("Cancel", null)

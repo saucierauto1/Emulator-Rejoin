@@ -16,6 +16,22 @@ object Settings {
     val ps: String get() = prefs?.getString("ps", "") ?: ""         // "linkCode=..." or "share=..." or ""
     val psRaw: String get() = prefs?.getString("psRaw", "") ?: ""   // the link as the user pasted it
 
+    // gap between launching clones, Discord webhook and its live status message
+    val launchGap: Int get() = prefs?.getInt("gap", 15) ?: 15
+    val webhook: String get() = prefs?.getString("webhook", "") ?: ""
+    val ping: String get() = prefs?.getString("ping", "") ?: ""
+    val statusEvery: Int get() = prefs?.getInt("every", 60) ?: 60
+    val shots: Boolean get() = prefs?.getBoolean("shots", true) ?: true
+    val events: Boolean get() = prefs?.getBoolean("events", true) ?: true
+    var statusMsg: String
+        get() = prefs?.getString("msg", "") ?: ""
+        set(v) { prefs?.edit()?.putString("msg", v)?.apply() }
+
+    fun saveExtra(gap: Int, webhook: String, ping: String, every: Int, shots: Boolean, events: Boolean) {
+        prefs?.edit()?.putInt("gap", gap)?.putString("webhook", webhook)?.putString("ping", ping)
+            ?.putInt("every", every)?.putBoolean("shots", shots)?.putBoolean("events", events)?.apply()
+    }
+
     fun save(place: String, ps: String, psRaw: String) {
         prefs?.edit()?.putString("place", place)?.putString("ps", ps)?.putString("psRaw", psRaw)?.apply()
     }
