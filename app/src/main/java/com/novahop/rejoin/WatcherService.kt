@@ -325,6 +325,7 @@ class WatcherService : Service() {
         say("Roblox apps: ${apps.joinToString(" ")}")
         for (p in apps) say("  $p opens links with: ${comp(p).ifEmpty { "NOT FOUND" }}")
         if (!Shell.root) say("No root: a frozen Roblox can't be force-closed, only sent the join link. Turn on root for best results.")
+        reporter = Thread { try { reportLoop() } catch (e: InterruptedException) { } }.also { it.start() }
         while (alive && !findHb()) {
             say("Waiting for NovaHop/hb (tap Setup, then join the game on every Roblox app)...")
             Thread.sleep(15000)
@@ -332,7 +333,6 @@ class WatcherService : Service() {
         for (d in hbDirs) say("Watching $d")
         var lastScan = now()
         guard = Thread { try { guardLoop() } catch (e: InterruptedException) { } }.also { it.start() }
-        reporter = Thread { try { reportLoop() } catch (e: InterruptedException) { } }.also { it.start() }
 
         while (alive) {
             Thread.sleep(CHECK * 1000L)
