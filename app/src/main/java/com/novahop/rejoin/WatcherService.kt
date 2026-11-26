@@ -18,6 +18,10 @@ class WatcherService : Service() {
     companion object {
         const val PLACE = "1537690962"   // Bee Swarm Simulator
         const val ERROR_WAIT = 20        // error screen up this many seconds -> restart
+        val HOPPING = Regex(
+            "teleport|experience is full|server is full|game is full|full server|unable to join|requested experience|joining",
+            RegexOption.IGNORE_CASE
+        )
         const val STALE = 120            // no heartbeat for this many seconds -> restart
         const val BOOT_WAIT = 150        // after a restart, give the app this long to load
         const val GIVEUP = 3600          // unmatched account's heartbeat older than this = not in use
@@ -396,7 +400,9 @@ class WatcherService : Service() {
                 if (l != null && now - l < BOOT_WAIT) continue
                 if (state == "error" && age < STALE) {
                     if ((errSince[uid] ?: 0L) == 0L) { errSince[uid] = now; say("${names[uid]}: error on screen: $msg") }
-                    if (now - errSince[uid]!! >= ERROR_WAIT) restart(uid, "error screen ($msg)")
+                    // a teleport / full-server error is NovaHop mid-hop and it retries by itself: give it longer
+                    val wait = if (HOPPING.containsMatchIn(msg)) Settings.hopWait else Settings.errorWait
+                    if (now - errSince[uid]!! >= wait) restart(uid, "error screen ($msg)")
                 } else {
                     if ((errSince[uid] ?: 0L) != 0L) say("${names[uid]}: error cleared")
                     errSince[uid] = 0

@@ -365,6 +365,8 @@ class MainActivity : Activity() {
         val ping = field("Discord user ID (optional)", Settings.ping, true)
         val every = field("60", Settings.statusEvery.toString(), true)
         val gap = field("15", Settings.launchGap.toString(), true)
+        val errWait = field("20", Settings.errorWait.toString(), true)
+        val hopWait = field("90", Settings.hopWait.toString(), true)
         val shots = CheckBox(this).apply { text = "Add a screenshot to the status"; isChecked = Settings.shots }
         val events = CheckBox(this).apply { text = "Message on every restart / stuck account"; isChecked = Settings.events }
         val box = LinearLayout(this).apply {
@@ -372,6 +374,10 @@ class MainActivity : Activity() {
             setPadding(dp(18), dp(8), dp(18), 0)
             addView(TextView(this@MainActivity).apply { text = "Seconds between launching clones" })
             addView(gap)
+            addView(TextView(this@MainActivity).apply { text = "Restart after an error screen stays up (seconds)" })
+            addView(errWait)
+            addView(TextView(this@MainActivity).apply { text = "Wait for teleport / full server errors (seconds, NovaHop retries these itself)" })
+            addView(hopWait)
             addView(TextView(this@MainActivity).apply { text = "Discord webhook (empty = off)" })
             addView(hook)
             addView(TextView(this@MainActivity).apply { text = "Update the status every (seconds, min 30)" })
@@ -390,6 +396,10 @@ class MainActivity : Activity() {
             Settings.saveExtra(
                 maxOf(0, gap.text.toString().toIntOrNull() ?: 15), url, ping.text.toString().trim(),
                 maxOf(30, every.text.toString().toIntOrNull() ?: 60), shots.isChecked, events.isChecked
+            )
+            Settings.saveWaits(
+                maxOf(5, errWait.text.toString().toIntOrNull() ?: 20),
+                maxOf(10, hopWait.text.toString().toIntOrNull() ?: 90)
             )
             WatcherState.log("Settings saved")
             return true

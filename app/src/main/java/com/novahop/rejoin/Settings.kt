@@ -23,6 +23,12 @@ object Settings {
     val statusEvery: Int get() = prefs?.getInt("every", 60) ?: 60
     val shots: Boolean get() = prefs?.getBoolean("shots", true) ?: true
     val events: Boolean get() = prefs?.getBoolean("events", true) ?: true
+    val errorWait: Int get() = prefs?.getInt("errWait", 20) ?: 20     // normal error screens (279, kicks)
+    val hopWait: Int get() = prefs?.getInt("hopWait", 90) ?: 90       // teleport / full server: NovaHop retries itself
+
+    fun saveWaits(errorWait: Int, hopWait: Int) {
+        prefs?.edit()?.putInt("errWait", errorWait)?.putInt("hopWait", hopWait)?.apply()
+    }
     var statusMsg: String
         get() = prefs?.getString("msg", "") ?: ""
         set(v) { prefs?.edit()?.putString("msg", v)?.apply() }
