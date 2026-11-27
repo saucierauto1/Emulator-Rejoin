@@ -21,7 +21,8 @@ It replaced an older Termux script (menu: game, private server link, live status
 
 ## Files (app/src/main/java/com/novahop/rejoin/)
 - `WatcherService.kt` - foreground service: finds Roblox clones (Mapping.kt), launches them one by one with
-  `launchGap` between, reads NovaHop/hb heartbeats (a half-written file keeps the last good line), restarts on errors
+  `launchGap` between, reads NovaHop/hb heartbeats (a half-written file keeps the last good line; an account leaves
+  "loading" as soon as a fresh ok heartbeat newer than its launch arrives), restarts on errors
   (teleport/full-server errors incl. codes 769-773 wait hopWait, and the timer starts again when NovaHop moves to a
   different hop error, but one error spell never lasts more than 5 x hopWait), RAM limit (3 quick tries, then an alert and once per 15 min), FPS cap via
   `novahop_fps.lua` in every autoexec folder (`applyFps`; capped 5 s after the game loaded, uncapped to 240 while
