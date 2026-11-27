@@ -10,6 +10,7 @@ data class Account(
     val pkg: String?,
     val status: String,
     val restarts: Int,
+    val lastReason: String = "",
 )
 
 object WatcherState {
