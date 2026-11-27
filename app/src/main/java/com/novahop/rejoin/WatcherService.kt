@@ -66,13 +66,18 @@ class WatcherService : Service() {
             "find /storage/emulated/0 -maxdepth 5 -type d -iname 'autoexec*'"
         ).lines().map { it.trim() }.filter { it.isNotEmpty() }
 
-        // FPS cap through the executor: novahop_fps.lua in every autoexec folder (removed when the cap is 0)
+        // FPS cap through the executor: novahop_fps.lua in every autoexec folder (removed when the cap is 0).
+        // Capped while in a server, uncapped while teleporting so hops load at full speed
+        // (the executor runs autoexec again on the new server, which caps it again once it has loaded).
         fun applyFps(): Int {
             val cap = Settings.fpsCap
             var n = 0
+            val lua = "if setfpscap then task.spawn(function() if not game:IsLoaded() then game.Loaded:Wait() end " +
+                "task.wait(5) setfpscap($cap) game:GetService(\"Players\").LocalPlayer.OnTeleport:Connect(function(s) " +
+                "if s == Enum.TeleportState.Failed then setfpscap($cap) else setfpscap(240) end end) end) end"
             for (d in autoexecDirs()) {
                 if (cap > 0) {
-                    Shell.run("echo 'if setfpscap then setfpscap($cap) end' > '$d/novahop_fps.lua'")
+                    Shell.run("echo '$lua' > '$d/novahop_fps.lua'")
                     if (Shell.run("cat '$d/novahop_fps.lua'").contains("setfpscap($cap)")) n++
                 } else {
                     Shell.run("rm -f '$d/novahop_fps.lua'")
