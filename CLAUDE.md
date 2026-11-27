@@ -21,14 +21,28 @@ It replaced an older Termux script (menu: game, private server link, live status
 
 ## Files (app/src/main/java/com/novahop/rejoin/)
 - `WatcherService.kt` - foreground service: finds Roblox clones (Mapping.kt), launches them one by one with
-  `launchGap` between, reads NovaHop/hb heartbeats, restarts on errors (teleport/full-server errors wait hopWait,
-  NovaHop retries those itself), Discord live status message (RAM per app, system stats, screenshot) + events,
-  START opens every clone (openAll), clears Roblox cache every cacheHours.
+  `launchGap` between, reads NovaHop/hb heartbeats (a half-written file keeps the last good line), restarts on errors
+  (teleport/full-server errors incl. codes 769-773 wait hopWait, and the timer starts again when NovaHop moves to a
+  different hop error, but one error spell never lasts more than 5 x hopWait), RAM limit (3 quick tries, then an alert and once per 15 min), FPS cap via
+  `novahop_fps.lua` in every autoexec folder (`applyFps`), each clone's own private server (`Settings.link(uid)`),
+  closes a clone running twice (every 60 s, keeps the oldest), remembers the last restart reason per account,
+  Discord live status message (RAM per app + total, last restart, system stats, screenshot) + events with the game
+  name, START opens every clone (openAll), clears Roblox cache every cacheHours. Each pass runs in `tick()` inside
+  a try/catch, so one bad pass never stops the watcher.
 - `Settings.kt` - SharedPreferences: place, private server (linkCode=/share=), launchGap, webhook, ping, statusEvery,
-  shots, events, errorWait, hopWait, autoBoot, openAll, cacheHours.
-- `MainActivity.kt` - UI + "Discord & settings" dialog. `BootReceiver.kt` - starts on boot if autoBoot or it was running.
-- `Shell.kt` (root commands: am force-stop, am start roblox:// links, pidof, dumpsys, screencap), `Discord.kt`
+  shots, events, errorWait, hopWait, autoBoot, openAll, cacheHours, ramLimit, fpsCap, and per account
+  `place_<uid>` / `ps_<uid>` / `psRaw_<uid>` (empty place = uses the main one).
+- `MainActivity.kt` - UI + "Discord & settings" dialog; tapping an account offers "Pick its Roblox app" or "Its own
+  game / private server"; Start asks for the battery-optimisation exemption. `BootReceiver.kt` - starts on boot if
+  autoBoot or it was running.
+- `Shell.kt` (root commands: am force-stop, am start roblox:// links, pidof, dumpsys, screencap; output is read on
+  the side and a command is killed after 30 s, so nothing can hang the watcher), `Discord.kt`
   (multipart webhook via HttpURLConnection; needs the INTERNET permission in the manifest), `WatcherState.kt`.
+
+## Untested on a real emulator
+Everything since the Discord update was only checked by reading the Kotlin carefully and by the GitHub build
+(it compiles; to check a build without releasing, push to a temporary branch whose build.yml has no release step):
+RAM limit, FPS cap file, per-clone servers, duplicate-clone kill, the battery prompt, the Discord status layout.
 
 ## Heartbeat
 Executor autoexec writes NovaHop/hb/<UserId>.txt `time|ok|msg|name` every 3 s

@@ -14,7 +14,8 @@ Get `NovaHopRejoin.apk` from the **Releases** page of this repo.
 3. Tap **Setup** and tap Allow on the root prompt.
 4. Optional: tap **Game / private server** to pick another game or paste a private server link.
 5. Tap **Start**, then join the game once on every Roblox app.
-6. With clones: if an account says NOT MATCHED, tap it and pick its app.
+6. With clones: if an account says NOT MATCHED, tap it and pick its app. Tapping an account also lets you
+   give that clone its own private server.
 
 Stop it with the **Stop** button. It starts again by itself after a reboot if it was running.
 
