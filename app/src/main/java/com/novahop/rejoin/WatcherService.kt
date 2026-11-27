@@ -111,6 +111,7 @@ class WatcherService : Service() {
     private val probed = HashMap<String, Long>()
     private val beats = HashMap<String, String>()     // last heartbeat line that could be read, per account
     private val errMsg = HashMap<String, String>()    // the error text the timer started with
+    private val errFirst = HashMap<String, Long>()    // when this error spell began (hop errors can't push it back)
     private val reason = HashMap<String, String>()    // why each account was last restarted
     private val ramHits = HashMap<String, Int>()      // RAM-limit restarts in a row
     private val queue = ArrayList<Pair<String, String>>()   // (uid, why) waiting for their launch slot
@@ -502,16 +503,22 @@ class WatcherService : Service() {
                 if (state == "error" && age < STALE) {
                     // NovaHop moving on to the next hop error = it's still working: the timer starts again
                     if ((errSince[uid] ?: 0L) == 0L || (msg != errMsg[uid] && HOPPING.containsMatchIn(msg))) {
-                        if ((errSince[uid] ?: 0L) == 0L) say("${names[uid]}: error on screen: $msg")
+                        if ((errSince[uid] ?: 0L) == 0L) {
+                            say("${names[uid]}: error on screen: $msg")
+                            errFirst[uid] = now
+                        }
                         errSince[uid] = now
                         errMsg[uid] = msg
                     }
-                    // a teleport / full-server error is NovaHop mid-hop and it retries by itself: give it longer
+                    // a teleport / full-server error is NovaHop mid-hop and it retries by itself: give it longer,
+                    // but never more than 5x that in one go (two hop errors taking turns forever = stuck)
                     val wait = if (HOPPING.containsMatchIn(msg)) Settings.hopWait else Settings.errorWait
-                    if (now - errSince[uid]!! >= wait) restart(uid, "error screen ($msg)")
+                    if (now - errSince[uid]!! >= wait || now - (errFirst[uid] ?: now) >= 5L * Settings.hopWait)
+                        restart(uid, "error screen ($msg)")
                 } else {
                     if ((errSince[uid] ?: 0L) != 0L) say("${names[uid]}: error cleared")
                     errSince[uid] = 0
+                    errFirst.remove(uid)
                     if (age >= STALE) {
                         val f = fails[uid] ?: 0
                         if (f >= 3 && l != null && now - l < RETRY) continue   // probably the wrong app: stop closing it over and over
