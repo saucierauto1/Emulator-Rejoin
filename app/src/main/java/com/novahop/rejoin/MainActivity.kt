@@ -180,6 +180,12 @@ class MainActivity : Activity() {
             if (Build.VERSION.SDK_INT >= 33 &&
                 checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
             ) requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            // without this some phones freeze the watcher at night
+            val pm = getSystemService(android.content.Context.POWER_SERVICE) as android.os.PowerManager
+            if (!pm.isIgnoringBatteryOptimizations(packageName)) try {
+                startActivity(Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName")))
+            } catch (e: Exception) {
+            }
             WatcherService.start(this)
         }
         ui.postDelayed({ refresh() }, 500)
@@ -260,7 +266,7 @@ class MainActivity : Activity() {
 
     private fun statusColor(s: String): Int = when {
         s == "OK" -> green
-        s.startsWith("loading") || s == "restarting" || s.startsWith("not matched") -> yellow
+        s.startsWith("loading") || s == "restarting" || s.startsWith("not matched") || s.startsWith("waiting") -> yellow
         else -> red
     }
 
@@ -297,7 +303,7 @@ class MainActivity : Activity() {
                     background = pressable(card)
                     setPadding(dp(14), dp(12), dp(14), dp(12))
                     isClickable = true
-                    setOnClickListener { pick(a.uid, a.name) }
+                    setOnClickListener { accountMenu(a.uid, a.name) }
                     addView(label(a.name, 16f, textMain, true))
                     addView(sub)
                     addView(st)
@@ -309,7 +315,9 @@ class MainActivity : Activity() {
         for (a in accounts) {
             val r = rows[a.uid] ?: continue
             r.sub.text = (if (a.pkg == null) "tap to pick its app" else appLabel(a.pkg) + "  ·  " + a.pkg) +
-                "  ·  restarts: " + a.restarts
+                "  ·  restarts: " + a.restarts +
+                (if (Settings.ownPlace(a.uid).isNotEmpty()) "  ·  own server" else "") +
+                (if (a.lastReason.isNotEmpty()) "\nlast restart: " + a.lastReason else "")
             r.status.text = a.status
             r.status.setTextColor(statusColor(a.status))
         }
@@ -372,6 +380,8 @@ class MainActivity : Activity() {
         val autoBoot = CheckBox(this).apply { text = "Start watching when the emulator starts"; isChecked = Settings.autoBoot }
         val openAll = CheckBox(this).apply { text = "START opens every clone (one at a time)"; isChecked = Settings.openAll }
         val cache = field("0", Settings.cacheHours.toString(), true)
+        val ramLimit = field("0", Settings.ramLimit.toString(), true)
+        val fpsCap = field("0", Settings.fpsCap.toString(), true)
         val box = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
             setPadding(dp(18), dp(8), dp(18), 0)
@@ -379,6 +389,10 @@ class MainActivity : Activity() {
             addView(openAll)
             addView(TextView(this@MainActivity).apply { text = "Clear Roblox cache every (hours, 0 = off)" })
             addView(cache)
+            addView(TextView(this@MainActivity).apply { text = "Restart a clone using more RAM than (MB, 0 = off)" })
+            addView(ramLimit)
+            addView(TextView(this@MainActivity).apply { text = "FPS cap through the executor (e.g. 15 or 30, 0 = off)" })
+            addView(fpsCap)
             addView(TextView(this@MainActivity).apply { text = "Seconds between launching clones" })
             addView(gap)
             addView(TextView(this@MainActivity).apply { text = "Restart after an error screen stays up (seconds)" })
@@ -409,6 +423,15 @@ class MainActivity : Activity() {
                 maxOf(5, errWait.text.toString().toIntOrNull() ?: 20),
                 maxOf(10, hopWait.text.toString().toIntOrNull() ?: 90)
             )
+            val oldFps = Settings.fpsCap
+            Settings.savePerf(
+                maxOf(0, ramLimit.text.toString().toIntOrNull() ?: 0),
+                maxOf(0, fpsCap.text.toString().toIntOrNull() ?: 0)
+            )
+            if (Settings.fpsCap != oldFps) Thread {
+                val n = WatcherService.applyFps()
+                WatcherState.log(if (Settings.fpsCap > 0) "FPS cap ${Settings.fpsCap} put in $n executor autoexec folder(s), clones opened from now on use it" else "FPS cap removed")
+            }.start()
             WatcherState.log("Settings saved")
             return true
         }
@@ -425,6 +448,63 @@ class MainActivity : Activity() {
                         runOnUiThread { Toast.makeText(this, msg, Toast.LENGTH_LONG).show() }
                     }.start()
                 }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun accountMenu(uid: String, name: String) {
+        AlertDialog.Builder(this)
+            .setTitle(name)
+            .setItems(arrayOf("Pick its Roblox app", "Its own game / private server")) { _, i ->
+                if (i == 0) pick(uid, name) else serverDialog(uid, name)
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    // a private server just for this clone (off = it uses the main Game / private server setting)
+    private fun serverDialog(uid: String, name: String) {
+        val own = CheckBox(this).apply {
+            text = "Use its own game / private server"
+            isChecked = Settings.ownPlace(uid).isNotEmpty()
+        }
+        val game = EditText(this).apply {
+            hint = "Game link or place ID (empty = Bee Swarm Simulator)"
+            setSingleLine()
+            setText(Settings.ownPlace(uid).let { if (it == Settings.BEE_SWARM) "" else it })
+        }
+        val ps = EditText(this).apply {
+            hint = "Private server link (empty = public servers)"
+            setSingleLine()
+            setText(Settings.ownPsRaw(uid))
+        }
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(8), dp(18), 0)
+            addView(own)
+            addView(game)
+            addView(ps)
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Server for $name")
+            .setView(box)
+            .setPositiveButton("Save") { _, _ ->
+                if (!own.isChecked) {
+                    Settings.saveOwn(uid, "", "", "")
+                    WatcherState.log("$name uses the main server setting")
+                } else {
+                    val p = Settings.parseGame(game.text.toString())
+                    val s = Settings.parsePs(ps.text.toString())
+                    if (p == null || s == null) {
+                        Toast.makeText(this, "Didn't understand that link, nothing changed", Toast.LENGTH_LONG).show()
+                    } else {
+                        Settings.saveOwn(uid, p, s, ps.text.toString().trim())
+                        WatcherState.log("$name: own server, place $p, private server: ${if (s.isEmpty()) "no" else "yes"}")
+                    }
+                }
+                rowsKey = "-"
+                refresh()
             }
             .setNegativeButton("Cancel", null)
             .show()
