@@ -495,16 +495,18 @@ class WatcherService : Service() {
                     list.add(Account(uid, names[uid]!!, Mapping.get(uid), "waiting to launch (#${qi + 1})", restarts[uid] ?: 0, reason[uid] ?: ""))
                     continue
                 }
+                // a fresh heartbeat written after this launch = it's in game, no need to sit out the whole loading time
                 val l = last[uid]
+                val booting = l != null && now - l < BOOT_WAIT && !(ts > l && state != "error" && age < FRESH)
                 val st = when {
-                    l != null && now - l < BOOT_WAIT -> "loading (${now - l}s)"
+                    booting -> "loading (${now - l!!}s)"
                     state == "error" && age < STALE -> "error: $msg"
                     age >= STALE && (fails[uid] ?: 0) >= 3 -> "not coming back, check its app"
                     age >= STALE -> "restarting"
                     else -> "OK"
                 }
                 list.add(Account(uid, names[uid]!!, Mapping.get(uid), st, restarts[uid] ?: 0, reason[uid] ?: ""))
-                if (l != null && now - l < BOOT_WAIT) continue
+                if (booting) continue
                 if (state == "error" && age < STALE) {
                     // NovaHop moving on to the next hop error = it's still working: the timer starts again
                     if ((errSince[uid] ?: 0L) == 0L || (msg != errMsg[uid] && HOPPING.containsMatchIn(msg))) {
