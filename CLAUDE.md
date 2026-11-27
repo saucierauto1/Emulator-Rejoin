@@ -24,7 +24,8 @@ It replaced an older Termux script (menu: game, private server link, live status
   `launchGap` between, reads NovaHop/hb heartbeats (a half-written file keeps the last good line), restarts on errors
   (teleport/full-server errors incl. codes 769-773 wait hopWait, and the timer starts again when NovaHop moves to a
   different hop error, but one error spell never lasts more than 5 x hopWait), RAM limit (3 quick tries, then an alert and once per 15 min), FPS cap via
-  `novahop_fps.lua` in every autoexec folder (`applyFps`), each clone's own private server (`Settings.link(uid)`),
+  `novahop_fps.lua` in every autoexec folder (`applyFps`; capped 5 s after the game loaded, uncapped to 240 while
+  teleporting so hops load at full speed; one line with no single quotes because it's written with `echo '...'`), each clone's own private server (`Settings.link(uid)`),
   closes a clone running twice (every 60 s, keeps the oldest), remembers the last restart reason per account,
   Discord live status message (RAM per app + total, last restart, system stats, screenshot) + events with the game
   name, START opens every clone (openAll), clears Roblox cache every cacheHours. Each pass runs in `tick()` inside
