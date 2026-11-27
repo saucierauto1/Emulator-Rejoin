@@ -30,6 +30,24 @@ object Settings {
     val openAll: Boolean get() = prefs?.getBoolean("openAll", true) ?: true       // START opens every clone
     val cacheHours: Int get() = prefs?.getInt("cacheHours", 0) ?: 0                // clear Roblox cache every N hours, 0 = off
 
+    val ramLimit: Int get() = prefs?.getInt("ramLimit", 0) ?: 0   // restart a clone using more MB than this, 0 = off
+    val fpsCap: Int get() = prefs?.getInt("fpsCap", 0) ?: 0       // setfpscap in the executor's autoexec, 0 = off
+
+    fun savePerf(ramLimit: Int, fpsCap: Int) {
+        prefs?.edit()?.putInt("ramLimit", ramLimit)?.putInt("fpsCap", fpsCap)?.apply()
+    }
+
+    // a clone's own game / private server, per account (empty place = uses the main one)
+    fun ownPlace(uid: String): String = prefs?.getString("place_$uid", "") ?: ""
+    fun ownPsRaw(uid: String): String = prefs?.getString("psRaw_$uid", "") ?: ""
+    private fun ownPs(uid: String): String = prefs?.getString("ps_$uid", "") ?: ""
+
+    fun saveOwn(uid: String, place: String, ps: String, psRaw: String) {
+        prefs?.edit()?.putString("place_$uid", place)?.putString("ps_$uid", ps)?.putString("psRaw_$uid", psRaw)?.apply()
+    }
+
+    fun placeFor(uid: String?): String = if (uid != null && ownPlace(uid).isNotEmpty()) ownPlace(uid) else place
+
     fun saveMore(autoBoot: Boolean, openAll: Boolean, cacheHours: Int) {
         prefs?.edit()?.putBoolean("autoBoot", autoBoot)?.putBoolean("openAll", openAll)
             ?.putInt("cacheHours", cacheHours)?.apply()
@@ -68,12 +86,14 @@ object Settings {
         return null
     }
 
-    fun link(): String {
-        val p = ps
+    fun link(uid: String? = null): String {
+        val own = uid != null && ownPlace(uid).isNotEmpty()
+        val pl = if (own) ownPlace(uid!!) else place
+        val p = if (own) ownPs(uid!!) else ps
         return when {
-            p.startsWith("linkCode=") -> "roblox://placeId=$place&$p"
+            p.startsWith("linkCode=") -> "roblox://placeId=$pl&$p"
             p.startsWith("share=") -> "roblox://navigation/share_links?code=${p.removePrefix("share=")}&type=Server"
-            else -> "roblox://placeId=$place"
+            else -> "roblox://placeId=$pl"
         }
     }
 }

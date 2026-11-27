@@ -19,7 +19,7 @@ class WatcherService : Service() {
         const val PLACE = "1537690962"   // Bee Swarm Simulator
         const val ERROR_WAIT = 20        // error screen up this many seconds -> restart
         val HOPPING = Regex(
-            "teleport|experience is full|server is full|game is full|full server|unable to join|requested experience|joining",
+            "teleport|experience is full|server is full|game is full|full server|unable to join|requested experience|joining|restricted|no longer available|\\b(769|770|771|772|773)\\b",
             RegexOption.IGNORE_CASE
         )
         const val STALE = 120            // no heartbeat for this many seconds -> restart
@@ -62,11 +62,28 @@ class WatcherService : Service() {
             return if (l.isEmpty()) listOf("com.roblox.client") else l
         }
 
+        private fun autoexecDirs(): List<String> = Shell.run(
+            "find /storage/emulated/0 -maxdepth 5 -type d -iname 'autoexec*'"
+        ).lines().map { it.trim() }.filter { it.isNotEmpty() }
+
+        // FPS cap through the executor: novahop_fps.lua in every autoexec folder (removed when the cap is 0)
+        fun applyFps(): Int {
+            val cap = Settings.fpsCap
+            var n = 0
+            for (d in autoexecDirs()) {
+                if (cap > 0) {
+                    Shell.run("echo 'if setfpscap then setfpscap($cap) end' > '$d/novahop_fps.lua'")
+                    if (Shell.run("cat '$d/novahop_fps.lua'").contains("setfpscap($cap)")) n++
+                } else {
+                    Shell.run("rm -f '$d/novahop_fps.lua'")
+                }
+            }
+            return n
+        }
+
         // Puts heartbeat.lua into every Delta autoexec folder it can find. Returns the folders.
         fun installHeartbeat(): List<String> {
-            val dirs = Shell.run(
-                "find /storage/emulated/0 -maxdepth 5 -type d -iname 'autoexec*'"
-            ).lines().map { it.trim() }.filter { it.isNotEmpty() }
+            val dirs = autoexecDirs()
             val done = ArrayList<String>()
             for (d in dirs) {
                 if (Shell.run("grep -ls NovaHop_Heartbeat '$d'/*").trim().isNotEmpty()) { done.add(d); continue }
@@ -92,6 +109,10 @@ class WatcherService : Service() {
     private val restarts = HashMap<String, Int>()
     private val fails = HashMap<String, Int>()
     private val probed = HashMap<String, Long>()
+    private val beats = HashMap<String, String>()     // last heartbeat line that could be read, per account
+    private val errMsg = HashMap<String, String>()    // the error text the timer started with
+    private val reason = HashMap<String, String>()    // why each account was last restarted
+    private val ramHits = HashMap<String, Int>()      // RAM-limit restarts in a row
     private val queue = ArrayList<Pair<String, String>>()   // (uid, why) waiting for their launch slot
     private var nextLaunch = 0L
     private var reporter: Thread? = null
@@ -180,7 +201,12 @@ class WatcherService : Service() {
                 if (old == null || ts > old) best[uid] = line
             }
         }
-        return best
+        // a file caught half written keeps its last good line, so the account doesn't vanish for a moment
+        for ((u, l) in best) {
+            val old = beats[u]?.substringBefore('|')?.toLongOrNull()
+            if (old == null || (l.substringBefore('|').toLongOrNull() ?: 0L) >= old) beats[u] = l
+        }
+        return HashMap(beats)
     }
 
     // ------------------------------------------------------------ which app is which account
@@ -195,8 +221,9 @@ class WatcherService : Service() {
         say("Opening ${toOpen.size} Roblox app(s), ${Settings.launchGap}s apart")
         for ((i, p) in toOpen.withIndex()) {
             if (!alive) return
-            openLink(p)
-            Thread { try { clearAds(p) } catch (e: InterruptedException) { } }.start()
+            val owner = map.entries.firstOrNull { it.value == p }?.key
+            openLink(p, owner)
+            Thread { try { clearAds(p, owner) } catch (e: InterruptedException) { } }.start()
             for ((u, pk) in map) if (pk == p) last[u] = now()
             if (i < toOpen.size - 1) Thread.sleep(Settings.launchGap * 1000L)
         }
@@ -270,14 +297,17 @@ class WatcherService : Service() {
         return c
     }
 
-    private fun openLink(p: String) {
+    // uid: the account in this clone, so it joins its own private server if it has one
+    private fun openLink(p: String, uid: String?) {
         val c = comp(p)
-        if (c.isNotEmpty()) {
-            Shell.run("am start -n '$c' -a android.intent.action.VIEW -d '${Settings.link()}'")
+        val link = Settings.link(uid)
+        val out = if (c.isNotEmpty()) {
+            Shell.run("am start -n '$c' -a android.intent.action.VIEW -d '$link'")
         } else {
             say("Couldn't find the link screen in $p, sending the link with -p")
-            Shell.run("am start -a android.intent.action.VIEW -d '${Settings.link()}' -p $p")
+            Shell.run("am start -a android.intent.action.VIEW -d '$link' -p $p")
         }
+        if (out.contains("Error")) say("Android couldn't open $p: ${out.lines().firstOrNull { it.contains("Error") }?.trim()}")
     }
 
     // the screen in front right now, e.g. com.roblox.client/com.google.android.gms.ads.AdActivity
@@ -289,7 +319,7 @@ class WatcherService : Service() {
     private fun isAd(a: String) = AD.containsMatchIn(a)
 
     // after reopening an app: if an ad covers it, press Back until it's gone, then send the link again
-    private fun clearAds(p: String) {
+    private fun clearAds(p: String, uid: String?) {
         if (!Shell.root) return
         var t = 0
         var seen = false
@@ -303,7 +333,7 @@ class WatcherService : Service() {
             } else if (seen) {
                 say("Ad gone, sending the game link to $p again")
                 Thread.sleep(2000)
-                openLink(p)
+                openLink(p, uid)
                 return
             }
         }
@@ -317,13 +347,32 @@ class WatcherService : Service() {
     private fun doRestart(uid: String, why: String) {
         val p = Mapping.get(uid) ?: return
         say("Restarting $p (${names[uid]}): $why")
-        event("\uD83D\uDD04 Restarting **${names[uid]}**: $why")
+        event("\uD83D\uDD04 Restarting **${names[uid]}** (${gameName(Settings.placeFor(uid))}): $why")
         if (Shell.root) { Shell.run("am force-stop $p"); Thread.sleep(3000) }
-        openLink(p)
-        Thread { try { clearAds(p) } catch (e: InterruptedException) { } }.start()
+        openLink(p, uid)
+        Thread { try { clearAds(p, uid) } catch (e: InterruptedException) { } }.start()
         last[uid] = now()
         errSince[uid] = 0
         restarts[uid] = (restarts[uid] ?: 0) + 1
+        reason[uid] = why
+    }
+
+    private fun gameName(place: String) = if (place == Settings.BEE_SWARM) "Bee Swarm Simulator" else "Place $place"
+
+    // a clone running twice: keep the one that started first, close the others
+    private fun killDuplicates() {
+        if (!Shell.root) return
+        for (p in apps) {
+            val rows = Shell.run("for x in \$(pidof $p); do echo \"\$x \$(cut -d' ' -f22 /proc/\$x/stat)\"; done")
+                .lines().mapNotNull { l ->
+                    val f = l.trim().split(" ")
+                    if (f.size == 2) f[0].toLongOrNull()?.let { pid -> f[1].toLongOrNull()?.let { pid to it } } else null
+                }
+            if (rows.size < 2) continue
+            val keep = rows.minByOrNull { it.second }!!.first
+            for ((pid, _) in rows) if (pid != keep) Shell.run("kill -9 $pid")
+            say("$p was running ${rows.size} times, closed the extra one(s)")
+        }
     }
 
     // ------------------------------------------------------------ ad guard
@@ -359,6 +408,7 @@ class WatcherService : Service() {
         for (p in apps) say("  $p opens links with: ${comp(p).ifEmpty { "NOT FOUND" }}")
         if (!Shell.root) say("No root: a frozen Roblox can't be force-closed, only sent the join link. Turn on root for best results.")
         reporter = Thread { try { reportLoop() } catch (e: InterruptedException) { } }.also { it.start() }
+        if (Settings.fpsCap > 0) say("FPS cap ${Settings.fpsCap} put in ${applyFps()} executor autoexec folder(s)")
         if (Settings.openAll) openAll()
         while (alive && !findHb()) {
             say("Waiting for NovaHop/hb (tap Setup, then join the game on every Roblox app)...")
@@ -371,6 +421,18 @@ class WatcherService : Service() {
 
         while (alive) {
             Thread.sleep(CHECK * 1000L)
+            // one bad pass (odd shell output, a half-read file) must never stop the watcher for good
+            try { tick(lastScan, lastClean).let { lastScan = it.first; lastClean = it.second } }
+            catch (e: InterruptedException) { throw e }
+            catch (e: Exception) { say("Problem in watcher loop: ${e.message ?: e}") }
+        }
+    }
+
+    // one pass over every account -> (lastScan, lastClean)
+    private fun tick(scanAt: Long, cleanAt: Long): Pair<Long, Long> {
+        var lastScan = scanAt
+        var lastClean = cleanAt
+        run {
             val now = now()
             val hours = Settings.cacheHours
             if (hours > 0 && now - lastClean >= hours * 3600L) {
@@ -383,7 +445,10 @@ class WatcherService : Service() {
                 val old = hbDirs
                 if (!findHb()) hbDirs = old
                 if (hbDirs.size > n) say("Found new heartbeat folder(s), now watching ${hbDirs.size}")
+                killDuplicates()
             }
+            val lim = Settings.ramLimit
+            val ram = if (lim > 0) ramByApp() else emptyMap<String, Long>()
             val best = collect()
             val list = ArrayList<Account>()
             val pending = HashMap<String, List<String>>()
@@ -421,7 +486,7 @@ class WatcherService : Service() {
                 }
                 val qi = queue.indexOfFirst { it.first == uid }
                 if (qi >= 0) {
-                    list.add(Account(uid, names[uid]!!, Mapping.get(uid), "waiting to launch (#${qi + 1})", restarts[uid] ?: 0))
+                    list.add(Account(uid, names[uid]!!, Mapping.get(uid), "waiting to launch (#${qi + 1})", restarts[uid] ?: 0, reason[uid] ?: ""))
                     continue
                 }
                 val l = last[uid]
@@ -432,10 +497,15 @@ class WatcherService : Service() {
                     age >= STALE -> "restarting"
                     else -> "OK"
                 }
-                list.add(Account(uid, names[uid]!!, Mapping.get(uid), st, restarts[uid] ?: 0))
+                list.add(Account(uid, names[uid]!!, Mapping.get(uid), st, restarts[uid] ?: 0, reason[uid] ?: ""))
                 if (l != null && now - l < BOOT_WAIT) continue
                 if (state == "error" && age < STALE) {
-                    if ((errSince[uid] ?: 0L) == 0L) { errSince[uid] = now; say("${names[uid]}: error on screen: $msg") }
+                    // NovaHop moving on to the next hop error = it's still working: the timer starts again
+                    if ((errSince[uid] ?: 0L) == 0L || (msg != errMsg[uid] && HOPPING.containsMatchIn(msg))) {
+                        if ((errSince[uid] ?: 0L) == 0L) say("${names[uid]}: error on screen: $msg")
+                        errSince[uid] = now
+                        errMsg[uid] = msg
+                    }
                     // a teleport / full-server error is NovaHop mid-hop and it retries by itself: give it longer
                     val wait = if (HOPPING.containsMatchIn(msg)) Settings.hopWait else Settings.errorWait
                     if (now - errSince[uid]!! >= wait) restart(uid, "error screen ($msg)")
@@ -452,6 +522,17 @@ class WatcherService : Service() {
                         restart(uid, "no heartbeat for ${age}s (crashed, frozen or not in game)")
                     } else {
                         fails[uid] = 0
+                        val mb = Mapping.get(uid)?.let { ram[it] }
+                        if (lim > 0 && mb != null) {
+                            val h = ramHits[uid] ?: 0
+                            if (mb <= lim) {
+                                if (l == null || now - l >= RETRY) ramHits.remove(uid)
+                            } else if (h < 3 || l == null || now - l >= RETRY) {
+                                if (h == 2) event("⚠️ **${names[uid]}** keeps going over the RAM limit ($lim MB). Raise it in settings.", true)
+                                ramHits[uid] = h + 1
+                                restart(uid, "RAM limit: using $mb MB (limit $lim)")
+                            }
+                        }
                     }
                 }
             }
@@ -463,6 +544,7 @@ class WatcherService : Service() {
                 nextLaunch = now() + Settings.launchGap
             }
         }
+        return lastScan to lastClean
     }
 
     // ------------------------------------------------------------ Discord
@@ -489,7 +571,11 @@ class WatcherService : Service() {
                 try {
                     Discord.status(url, statusEmbed(), if (Settings.shots && Shell.root) screenshot() else null)
                     lastHookError = ""
-                } catch (e: Exception) { hookError(e) }
+                } catch (e: InterruptedException) {
+                    throw e
+                } catch (e: Throwable) {          // also out-of-memory from the screenshot: keep reporting
+                    hookError(Exception(e.message ?: e.toString()))
+                }
             }
             Thread.sleep(maxOf(30, Settings.statusEvery) * 1000L)
         }
@@ -498,7 +584,6 @@ class WatcherService : Service() {
     private fun statusEmbed(): org.json.JSONObject {
         val accounts = WatcherState.accounts
         val ram = ramByApp()
-        val game = if (Settings.place == Settings.BEE_SWARM) "Bee Swarm Simulator" else "Place ${Settings.place}"
         val sb = StringBuilder()
         for (a in accounts) {
             val (dot, word) = when {
@@ -510,9 +595,12 @@ class WatcherService : Service() {
             }
             val mb = a.pkg?.let { ram[it] }
             sb.append("$dot **${a.name}** \u2014 $word\n")
-            sb.append("Game: $game \u00B7 Rejoins: ${a.restarts} \u00B7 RAM: ${mb?.let { "$it MB" } ?: "\u2013"}\n\n")
+            sb.append("Game: ${gameName(Settings.placeFor(a.uid))} \u00B7 Rejoins: ${a.restarts} \u00B7 RAM: ${mb?.let { "$it MB" } ?: "\u2013"}\n")
+            if (a.lastReason.isNotEmpty()) sb.append("Last restart: ${a.lastReason}\n")
+            sb.append("\n")
         }
         if (accounts.isEmpty()) sb.append("No accounts seen yet.")
+        else sb.append("All Roblox apps: ${"%.1f".format(ram.values.sum() / 1024.0)} GB RAM")
         val online = accounts.count { it.status == "OK" }
         val (cpu, used, total) = systemStats()
         val embed = org.json.JSONObject()
@@ -573,6 +661,8 @@ class WatcherService : Service() {
         val small = android.graphics.Bitmap.createScaledBitmap(bmp, w, bmp.height * w / bmp.width, true)
         val out = java.io.ByteArrayOutputStream()
         small.compress(android.graphics.Bitmap.CompressFormat.JPEG, 70, out)
+        if (small !== bmp) small.recycle()
+        bmp.recycle()
         f.delete()
         return out.toByteArray()
     }
